@@ -1037,12 +1037,15 @@ func (s *Service) fetchAndCache(ctx context.Context, id string, c Candidate, key
 
 // queryLang maps a normalised language to the code OpenSubtitles expects in
 // the languages parameter (it splits Portuguese and Chinese by region).
+// Generic Portuguese is treated as Brazilian: OpenSubtitles has no plain
+// "pt" code, and the Brazilian catalogue is the one viewers mean by default.
+// An explicit pt-pt preference still queries pt-pt.
 func queryLang(l string) string {
 	switch n := langtag.Normalize(l); n {
 	case "nb":
 		return "no"
 	case "pt":
-		return "pt-pt"
+		return "pt-br"
 	case "zh":
 		return "zh-cn"
 	default:

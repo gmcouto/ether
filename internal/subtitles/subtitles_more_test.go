@@ -308,8 +308,11 @@ func TestLanguageHelpers(t *testing.T) {
 			t.Errorf("langtag.Normalize(%q)=%q want %q", in, got, want)
 		}
 	}
-	if queryLang("por") != "pt-pt" || queryLang("zh") != "zh-cn" || queryLang("pt-BR") != "pt-br" {
+	if queryLang("por") != "pt-br" || queryLang("zh") != "zh-cn" || queryLang("pt-BR") != "pt-br" {
 		t.Fatal("queryLang mapping")
+	}
+	if queryLang("pt-PT") != "pt-pt" || queryLang("pt-pt") != "pt-pt" {
+		t.Fatal("explicit pt-pt preference must keep querying pt-pt")
 	}
 	miss := MissingLanguages(&core.User{SubtitleLanguages: []string{"en", "es", "en-GB"}}, []core.StreamInfo{{Type: "audio", Language: "spa"}, {Type: "subtitle", Language: "eng"}})
 	if len(miss) != 1 || miss[0] != "es" {
