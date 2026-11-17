@@ -29,6 +29,7 @@ import (
 	"github.com/braedonsaunders/ether/internal/frontend"
 	"github.com/braedonsaunders/ether/internal/frontend/kit/subtext"
 	"github.com/braedonsaunders/ether/internal/frontends/plex/model"
+	"github.com/braedonsaunders/ether/internal/langfeat"
 )
 
 // SubtitleCatalog is optionally implemented by Deps.Subtitles: the sidecars
@@ -484,6 +485,18 @@ func (s *Server) handleSubtitleSearch(w http.ResponseWriter, r *http.Request) {
 // handleSubtitlePick is PUT /library/metadata/{key}/subtitles?key=: download
 // a search result, add it to the title as an external subtitle stream and
 // select it for the viewer.
+//
+// subtitlePickBudget bounds provider sidecar downloads. The work runs
+// detached from the client's PUT (which answers 200 first), so a longer
+// deadline blocks nothing. Language-feature offers — speech-to-text and
+// subtitle translation — get subtitleLanguageBudget instead: a whole feature
+// is transcribed in 10-minute chunks and can take tens of minutes on a CPU
+// STT backend, and translation walks every cue in batches.
+const (
+	subtitlePickBudget     = 2 * time.Minute
+	subtitleLanguageBudget = 90 * time.Minute
+)
+
 func (s *Server) handleSubtitlePick(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	pr := FromContext(ctx)
@@ -538,7 +551,11 @@ func (s *Server) handleSubtitlePick(w http.ResponseWriter, r *http.Request) {
 		defer finishPick()
 		// Retain the viewer/client identity used by subtitle correction to
 		// find this playback session, while surviving the PUT disconnect.
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		budget := subtitlePickBudget
+		if langfeat.IsReserved(providerID) {
+			budget = subtitleLanguageBudget
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
 		stop := context.AfterFunc(s.ctx, cancel)
 		defer stop()
 		defer cancel()

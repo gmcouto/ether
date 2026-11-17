@@ -1153,6 +1153,51 @@ func TestSubtitleApplyReturnsBeforeDownload(t *testing.T) {
 	}
 }
 
+type deadlineCaptureDownload struct {
+	*fakeSubtitles
+	dl chan time.Duration
+}
+
+func (d *deadlineCaptureDownload) DownloadSubtitle(ctx context.Context, t *core.Title, u *core.User, id int64) (core.StreamInfo, error) {
+	if dl, ok := ctx.Deadline(); ok {
+		d.dl <- time.Until(dl)
+	}
+	return d.fakeSubtitles.DownloadSubtitle(ctx, t, u, id)
+}
+
+func TestSubtitlePickBudgets(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id   int64
+		want time.Duration
+	}{
+		{"provider download stays short", 101, subtitlePickBudget},
+		{"speech-to-text gets a long budget", 9000000000000002, subtitleLanguageBudget},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, subs := newSubtitleFixture(t)
+			subs.offers = []SubtitleOffer{{ID: tc.id, Language: "en"}}
+			cap := &deadlineCaptureDownload{subs, make(chan time.Duration, 1)}
+			f.srv.setSubtitles(cap)
+			root := "/library/metadata/" + fightClub.Key.String() + "/subtitles"
+			mc := decodeJSON(t, f.get(t, root+"?language=en", jsonAccept...))
+			key := mc["Stream"].([]any)[0].(map[string]any)["key"].(string)
+			if rec := f.request(t, http.MethodPut, root+"?key="+url.QueryEscape(key), nil); rec.Code != 200 {
+				t.Fatalf("pick: %d %s", rec.Code, rec.Body.String())
+			}
+			select {
+			case got := <-cap.dl:
+				if got > tc.want+2*time.Second || got < tc.want-5*time.Second {
+					t.Fatalf("deadline remaining %v, want near %v", got, tc.want)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("download did not start")
+			}
+			waitSubtitlePick(t, f, fightClub.Key)
+		})
+	}
+}
+
 func TestSubtitleOfferBoundAndViewerScope(t *testing.T) {
 	var offers subtitleOffers
 	first := offers.add(fightClub.Key, ownerUser.ID, 101)
