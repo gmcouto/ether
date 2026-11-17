@@ -47,8 +47,12 @@ func (c Client) client() *http.Client {
 	return &http.Client{Timeout: 10 * time.Minute}
 }
 
-// Transcribe posts one audio file and returns the response body.
-// response_format=vtt asks for timed cues. filename is the multipart name.
+// Transcribe posts one audio file and returns a WebVTT document built from
+// the server's timed cues. It asks for response_format=vtt first (the native
+// path for Whisper and servers that speak its API); when the endpoint rejects
+// that format — parakeet.cpp-server only renders json/text/verbose_json — it
+// retries once with verbose_json + timestamp_granularities[]=word and groups
+// the per-word timestamps into cues itself. filename is the multipart name.
 func (c Client) Transcribe(ctx context.Context, audio io.Reader, filename, language string) (string, error) {
 	url := Endpoint(c.BaseURL)
 	if url == "" || strings.TrimSpace(c.Model) == "" {
@@ -57,20 +61,58 @@ func (c Client) Transcribe(ctx context.Context, audio io.Reader, filename, langu
 	if filename == "" {
 		filename = "audio.wav"
 	}
+	data, err := io.ReadAll(io.LimitReader(audio, maxAudioBytes))
+	if err != nil {
+		return "", err
+	}
+	text, err := c.transcribeBytes(ctx, url, data, filename, language, "vtt", false)
+	if err != nil && formatRejected(err) {
+		text, err = c.transcribeBytes(ctx, url, data, filename, language, "verbose_json", true)
+	}
+	return text, err
+}
+
+// maxAudioBytes bounds one transcribed piece (10 minutes of 16 kHz mono s16
+// is about 19 MiB; splitWAV never hands us more).
+const maxAudioBytes = 64 << 20
+
+// formatRejected reports whether a transcription error is the server saying
+// it does not implement the requested response_format, so that switching to
+// verbose_json is worth one retry.
+func formatRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "response_format") || strings.Contains(msg, "response format")
+}
+
+// transcribeBytes uploads one audio piece and returns subtitle text. Format
+// is "vtt" or "verbose_json"; words asks for timestamp_granularities[]=word
+// alongside verbose_json.
+func (c Client) transcribeBytes(ctx context.Context, url string, data []byte, filename, language, format string, words bool) (string, error) {
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
 	part, err := w.CreateFormFile("file", filename)
 	if err != nil {
 		return "", err
 	}
-	if _, err := io.Copy(part, audio); err != nil {
+	if _, err := part.Write(data); err != nil {
 		return "", err
 	}
 	if err := w.WriteField("model", c.Model); err != nil {
 		return "", err
 	}
-	if err := w.WriteField("response_format", "vtt"); err != nil {
+	if err := w.WriteField("response_format", format); err != nil {
 		return "", err
+	}
+	if words {
+		// timestamp_granularities[]=word asks for per-word timestamps. Some
+		// servers (whisper.cpp) put the words on each segment; parakeet.cpp
+		// returns them at the top level. parseVerboseJSON accepts both.
+		if err := w.WriteField("timestamp_granularities[]", "word"); err != nil {
+			return "", err
+		}
 	}
 	if language = strings.TrimSpace(language); language != "" {
 		if err := w.WriteField("language", language); err != nil {
@@ -114,6 +156,13 @@ func (c Client) Transcribe(ctx context.Context, audio io.Reader, filename, langu
 			msg = resp.Status
 		}
 		return "", fmt.Errorf("speech-to-text: %s", msg)
+	}
+	if format == "verbose_json" {
+		cues, err := parseVerboseJSON(raw)
+		if err != nil {
+			return "", err
+		}
+		return renderVTT(cues), nil
 	}
 	return strings.TrimSpace(string(raw)), nil
 }
