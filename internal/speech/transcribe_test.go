@@ -55,7 +55,7 @@ func TestTranscribePostsWhisperRequest(t *testing.T) {
 				}
 			}
 		}
-		io.WriteString(w, "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n")
+		io.WriteString(w, `{"text":"Hello","segments":[{"id":0,"start":1,"end":2,"text":"Hello"}],"words":[{"word":"Hello","start":1,"end":2}]}`)
 	}))
 	defer srv.Close()
 	c := Client{BaseURL: srv.URL, APIKey: "secret", Model: "whisper-1", HTTP: srv.Client()}
@@ -72,7 +72,7 @@ func TestTranscribePostsWhisperRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotModel != "whisper-1" || gotFormat != "vtt" || gotGran != "" || gotLang != "en" || gotAuth != "Bearer secret" {
+	if gotModel != "whisper-1" || gotFormat != "verbose_json" || gotGran != "word" || gotLang != "en" || gotAuth != "Bearer secret" {
 		t.Fatalf("model %q format %q granularity %q lang %q auth %q", gotModel, gotFormat, gotGran, gotLang, gotAuth)
 	}
 	if !strings.Contains(out, "Hello") {
@@ -80,9 +80,9 @@ func TestTranscribePostsWhisperRequest(t *testing.T) {
 	}
 }
 
-func TestTranscribeFallsBackWhenVTTRejected(t *testing.T) {
-	// A parakeet.cpp-server rejects vtt; ether must retry with verbose_json
-	// + timestamp_granularities[]=word and still return timed cues.
+func TestTranscribeFallsBackToVTTWhenVerboseRejected(t *testing.T) {
+	// A gateway rejects verbose_json (or a vtt-only server): ether retries
+	// with response_format=vtt and still returns timed cues.
 	var reqs []string
 	var gotGran string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -108,28 +108,26 @@ func TestTranscribeFallsBackWhenVTTRejected(t *testing.T) {
 			}
 		}
 		reqs = append(reqs, format)
-		if format == "vtt" {
+		if format == "verbose_json" {
 			w.WriteHeader(http.StatusBadRequest)
-			io.WriteString(w, `{"error":{"message":"unsupported response_format 'vtt'"}}`)
+			io.WriteString(w, `{"error":{"message":"unsupported response_format 'verbose_json'"}}`)
 			return
 		}
-		io.WriteString(w, `{"text":"Hi there. Bye now.","segments":[{"id":0,"start":0,"end":4,"text":"Hi there. Bye now."}],`+
-			`"words":[{"word":"Hi","start":0.2,"end":0.5},{"word":"there.","start":0.5,"end":0.9},`+
-			`{"word":"Bye","start":1.2,"end":1.4},{"word":"now.","start":1.4,"end":1.8}]}`)
+		io.WriteString(w, "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHi there.\n")
 	}))
 	defer srv.Close()
-	c := Client{BaseURL: srv.URL + "/v1", Model: "parakeet", HTTP: srv.Client()}
+	c := Client{BaseURL: srv.URL + "/v1", Model: "whisper", HTTP: srv.Client()}
 	out, err := c.Transcribe(context.Background(), strings.NewReader("x"), "a.wav", "en")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reqs) != 2 || reqs[0] != "vtt" && reqs[1] != "verbose_json" {
-		t.Fatalf("requests = %v, want vtt then verbose_json", reqs)
+	if len(reqs) != 2 || reqs[0] != "verbose_json" && reqs[1] != "vtt" {
+		t.Fatalf("requests = %v, want verbose_json then vtt", reqs)
 	}
 	if gotGran != "word" {
 		t.Fatalf("granularity %q", gotGran)
 	}
-	if !strings.Contains(out, "Hi there.") || !strings.Contains(out, "Bye now.") {
+	if !strings.Contains(out, "Hi there.") {
 		t.Fatalf("out = %q", out)
 	}
 }

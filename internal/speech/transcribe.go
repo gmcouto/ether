@@ -48,11 +48,13 @@ func (c Client) client() *http.Client {
 }
 
 // Transcribe posts one audio file and returns a WebVTT document built from
-// the server's timed cues. It asks for response_format=vtt first (the native
-// path for Whisper and servers that speak its API); when the endpoint rejects
-// that format — parakeet.cpp-server only renders json/text/verbose_json — it
-// retries once with verbose_json + timestamp_granularities[]=word and groups
-// the per-word timestamps into cues itself. filename is the multipart name.
+// the server's timed cues. It asks for verbose_json + timestamp_granularities[]
+// first and groups the per-word timestamps into cues itself: that is the only
+// transcription format that survives an AI gateway's pass-through (omniroute
+// rejects vtt/srt/text responses on its quality check), and whisper.cpp,
+// parakeet.cpp and the OpenAI endpoints all speak it. When an endpoint
+// rejects verbose_json, it falls back once to response_format=vtt for the
+// servers that render that natively. filename is the multipart name.
 func (c Client) Transcribe(ctx context.Context, audio io.Reader, filename, language string) (string, error) {
 	url := Endpoint(c.BaseURL)
 	if url == "" || strings.TrimSpace(c.Model) == "" {
@@ -65,9 +67,9 @@ func (c Client) Transcribe(ctx context.Context, audio io.Reader, filename, langu
 	if err != nil {
 		return "", err
 	}
-	text, err := c.transcribeBytes(ctx, url, data, filename, language, "vtt", false)
+	text, err := c.transcribeBytes(ctx, url, data, filename, language, "verbose_json", true)
 	if err != nil && formatRejected(err) {
-		text, err = c.transcribeBytes(ctx, url, data, filename, language, "verbose_json", true)
+		text, err = c.transcribeBytes(ctx, url, data, filename, language, "vtt", false)
 	}
 	return text, err
 }
@@ -77,8 +79,8 @@ func (c Client) Transcribe(ctx context.Context, audio io.Reader, filename, langu
 const maxAudioBytes = 64 << 20
 
 // formatRejected reports whether a transcription error is the server saying
-// it does not implement the requested response_format, so that switching to
-// verbose_json is worth one retry.
+// it does not implement the requested response_format, so that switching
+// formats is worth one retry.
 func formatRejected(err error) bool {
 	if err == nil {
 		return false
